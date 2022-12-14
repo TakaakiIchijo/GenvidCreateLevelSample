@@ -1,0 +1,31 @@
+body {
+    background-color: black;
+}
+.button {
+    cursor: pointer;
+    position:absolute;
+    display:inline-block;
+    padding: 1vw;
+    opacity: 0.7;
+    border-radius: 8px;
+    top: 15vw;
+    left:10vw;
+    height: 6vw;
+    width: 6vw;
+    color:black;
+    font-size: 1.2em;
+}
+
+.buttonsendata {
+    position:absolute;
+    top: 60vh;
+    left:3vw;
+    height: 6vw;
+    width: 8vw;
+    color:black;
+}
+
+.button:disabled {
+    background-color: gray;
+    color:black;
+}

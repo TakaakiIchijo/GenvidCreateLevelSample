@@ -1,0 +1,79 @@
+job "web" {
+  datacenters = [
+	# {{range $i, $dc := datacenters}}
+	"{{$dc}}",
+	# {{end}}
+  ]
+
+  task "web" {
+	driver = "raw_exec"
+
+	config {
+	  command = "{{key `local/binary/node/path` | js}}"
+	  args = ["{{key `local/website/script` | js}}"]
+	}
+
+    vault {
+      policies = ["genvid"]
+    }
+	env {
+	  GENVID_LIVESERVICE = "{{key `/genvid/encode/stream/service`}}"
+      GENVID_LIVECHANNEL = "{{key `/genvid/encode/stream/channel`}}"
+      # {{with secret `secret/disco` }}
+      GENVID_DISCO_SECRET = "{{ .Data.GENVID_DISCO_SECRET }}"
+      # {{end}}
+	  # {{with secret `secret/studio` }}
+      GENVID_STUDIO_SECRET = "{{ .Data.GENVID_STUDIO_SECRET }}"
+      # {{end}}
+      # {{with secret `secret/webgateway` }}
+      GENVID_WEBGATEWAY_SECRET = "{{ .Data.GENVID_WEBGATEWAY_SECRET }}"
+      # {{end}}
+	  # {{if keyExists `/twitch_extension/enabled`}}
+	  # {{ if key `/twitch_extension/enabled` | parseBool }}
+	  # {{with secret `secret/twitch` }}
+	    TWITCH_EXT_CLIENT_SECRET = "{{ .Data.TWITCH_EXT_CLIENT_SECRET }}"
+	  # {{ end }}{{ end }}{{end}}
+	  // {{if keyExists `/embed_ssl/enabled`}}
+	  // {{ if key `/embed_ssl/enabled` | parseBool }}
+      SSL = true
+      // {{ end }}{{ end }}
+	  PORT = "${NOMAD_PORT_web}"
+	}
+
+	resources {
+	  network {
+		mbits = 5
+		port "web" {
+		  static = 30000
+		}
+	  }
+	}
+
+	service {
+	  name = "web"
+	  tags = ["engage", "web"]
+	  port = "web"
+
+	  // {{if keyExists `/embed_ssl/enabled`}}
+	  // {{ if key `/embed_ssl/enabled` | parseBool }}
+	  check {
+		name     = "HTTPS Check"
+		type     = "http"
+		path     = "/health"
+		protocol = "https"
+		tls_skip_verify = true
+		interval = "5s"
+		timeout  = "2s"
+	  }
+	  {{ else }}
+	  check {
+		name     = "HTTP Check"
+		type     = "http"
+		path     = "/health"
+		interval = "5s"
+		timeout  = "2s"
+	  }
+      // {{ end }}{{ end }}
+	}
+  }
+}

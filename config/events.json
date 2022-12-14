@@ -1,0 +1,41 @@
+{
+  "version": "1.7.0",
+  "event": {
+    "game": {
+          "maps": [
+            {
+              "id": "levelData",
+              "source": "userinput",
+              "where": {
+                "key": ["levelData"],
+                "name": "<levelDataArrayStr>",
+                "type": "string"
+              },
+              "key": [
+                "levelData",
+                "<levelDataArrayStr>"
+              ],
+              "value": 1
+            }
+          ],
+          "reductions": [
+            {
+              "id": "levelData",
+              "where": {
+                "key": [
+                  "levelData",
+                  "<levelDataArrayStr>"
+                ]
+              },
+              "key": [
+                "<levelDataArrayStr>"
+              ],
+              "value": [
+                "$sum"
+              ],
+              "period": 250
+            }
+          ]
+    }
+  }
+}
