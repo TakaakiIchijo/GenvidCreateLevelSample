@@ -9,7 +9,7 @@ MonoBehaviour:
   m_GameObject: {fileID: 0}
   m_Enabled: 1
   m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 5acaefa5aeb74bb4ebcb367cad5ded31, type: 3}
-  m_Name: Genvid Command Item
+  m_Script: {fileID: 11500000, guid: aed2ff67f6ce13c4fbb55237fedb3051, type: 3}
+  m_Name: GenvidEventLevelData
   m_EditorClassIdentifier: 
-  Id: Commands
+  Id: levelData
