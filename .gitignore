@@ -16,10 +16,14 @@ app/UserSettings/
 
 # Genvid SDK
 app/Assets/Genvid
+public/genvid.umd.js
 
 # Genvid Files
-config
-public
+config/web.hcl
+config/stream.hcl
+config/game.hcl
+config/sample.hcl
+
 backend
 templates
 package.json
