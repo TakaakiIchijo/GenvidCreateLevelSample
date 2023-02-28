@@ -1,471 +1,341 @@
 ﻿using UnityEngine;
 using System.Collections;
-using System.Runtime.InteropServices;
 using System;
-using GenvidSDKCSharp;
-using UnityEngine.Rendering;
-using System.Collections.Generic;
+using Genvid;
+using Genvid.Plugin;
 
-public class GenvidVideo : GenvidStreamBase
+namespace Genvid
 {
-    // GENVID - Start DLL import
-    [DllImport("GenvidPlugin")]
-    private static extern GenvidSDK.Status GetVideoInitStatus();
- 
-    [DllImport("GenvidPlugin")]
-    private static extern GenvidSDK.Status GetVideoSubmitDataStatus();
-
-    [DllImport("GenvidPlugin")]
-    public static extern void SetupVideoChannel(string streamID);
-
-    [DllImport("GenvidPlugin")]
-    public static extern void CleanUp();
-
-    [DllImport("GenvidPlugin")]
-    public static extern IntPtr GetRenderEventFunc();
-    // GENVID - Stop DLL import
-
-    public enum eCaptureType
-	{
-		Automatic,
-		Texture
-	}
-
-	[SerializeField]
-    [Tooltip("Video Stream Name")]
-    private string m_StreamName;
-
-    [SerializeField]
-    [Range(30.0f, 60.0f)]
-    [Tooltip("Video Stream framerate")]
-    private float m_Framerate = 30.0f;
-
-    [SerializeField]
-    [Tooltip("Video Capture Type")]
-    private eCaptureType m_CaptureType;
-
-	[SerializeField]
-    [Tooltip("Video Source (Texture or Camera)")]
-    private UnityEngine.Object m_VideoSource;
-	
-	public string StreamName
-	{
-        get { return m_StreamName; }
-        private set { m_StreamName = value; }
-	}
-
-	public float Framerate
-	{
-        get { return m_Framerate; }
-        private set { m_Framerate = value; }
-	}
-	
-	public eCaptureType CaptureType
-	{
-		get { return m_CaptureType;  }
-		set { m_CaptureType = value; }
-	}
-
-	public UnityEngine.Object VideoSource
-	{
-		get { return m_VideoSource;  }
-		set { m_VideoSource = value; }
-	}
-
-	public bool IsCreated	
-	{
-		get { return m_IsCreated; }
-        private set { m_IsCreated = value; }
-    }
-
-	private UnityEngine.Object m_CurrentVideoSource;
-	private RenderTexture m_RenderTexture;
-	private IntPtr m_TexturePtr;
-
-	private bool m_TerminateCoroutine = false;
-	private bool m_ProcessComplete = true;
-	private bool m_QuitProcess = false;
-	private bool m_IsCreated = false;
-    
-    private CommandBuffer m_commandBuffer;
-    private const string commandBufferName = "MultipleCapture";
-
-	// GENVID - On start begin
-	public new bool Create()
-	{
-    #if UNITY_EDITOR || UNITY_STANDALONE_WIN
-		if(GenvidSessionManager.Instance.ActivateSDK && !m_IsCreated && GenvidSessionManager.IsInitialized)
-		{
-            var status = GenvidSDK.CreateStream(m_StreamName);
-            if (GenvidSDK.StatusFailed(status))
-            {
-				Debug.LogError("Error while creating the " + m_StreamName + " stream: " + GenvidSDK.StatusToString(status));
-				return false;
-			}
-            else if (GenvidSessionManager.Instance.ActivateDebugLog)
-            {
-                Debug.Log("Genvid Create video stream named " + m_StreamName + " performed correctly.");
-            }
-
-            int width = 0;
-            int height = 0;
-            status = GenvidSDK.GetParameter(m_StreamName, "genvid/encode/input/width", ref width);
-            if (status == GenvidSDK.Status.Success)
-            {
-                status = GenvidSDK.GetParameter(m_StreamName, "genvid/encode/input/height", ref height);
-                if (status == GenvidSDK.Status.Success)
-                {
-                    // Force Resolution
-                    Screen.SetResolution(width, height, false);
-                }
-            }
-
-            // Force windowed mode
-            if (Screen.fullScreen)
-            {
-                Screen.fullScreen = false;
-            }
-
-            SetFrameRate(m_StreamName, Framerate);            			
-            SetupVideoChannel(m_StreamName);
-            StartCoroutine(CallPluginAtEndOfFrames());
-            m_IsCreated = true;
-		}
-    #endif
-        return true;
-    }
-	// GENVID - On start end
-
-	private void CleanupResources()
-	{
-    #if UNITY_EDITOR || UNITY_STANDALONE_WIN
-		var status = GenvidSDK.DestroyStream(m_StreamName);
-		if (GenvidSDK.StatusFailed(status))
-        {
-			Debug.LogError("Error while destroying the " + m_StreamName + " stream: " + GenvidSDK.StatusToString(status));
-		}
-        else if (GenvidSessionManager.Instance.ActivateDebugLog)
-        {
-            Debug.Log("Genvid Destroy video stream named " + m_StreamName + " performed correctly.");
-        }
-
-        if (GetCameraFromSource(m_CurrentVideoSource) != null)
-        {
-            CleanupCameraCommandBuffer(m_CurrentVideoSource);
-
-            if(m_commandBuffer != null)
-            {
-                m_commandBuffer.Clear();
-            }
-            DestroyTexture();
-        }
-
-        CleanUp();
-		m_IsCreated = false;
-    #endif
-	}
-
-    public new void Destroy()
+    namespace Plugin
     {
-        if (GenvidSessionManager.Instance.ActivateSDK && m_IsCreated)
+        namespace Stream
         {
-            m_QuitProcess = true;
-            StartCoroutine(DestroyVideo());
-        }
-    }
-
-
-    private IEnumerator DestroyVideo()
-	{
-		if (m_IsCreated)
-        {
-            // Wait only if the application does not quit.
-            if (!GenvidSessionManager.IsDestroying)
+            /// <summary>
+            /// Helper class that handles state changes and data submissions for video streams.
+            /// </summary>
+            [Serializable]
+            public class Video : IGenvidPlugin
             {
-                yield return new WaitUntil(() => m_TerminateCoroutine == true);
-            }
-            CleanupResources();
-        }
-	}
+                /// <summary>
+                /// Used to keep the video submitter from being destroyed between scenes.
+                /// </summary>
+                private class DummyMonoBehavior : MonoBehaviour { }
 
-	private void DestroyTexture()
-	{
-		if(m_RenderTexture != null)
-		{
-			m_RenderTexture.Release();
-			Destroy(m_RenderTexture);
-		}
-	}
+                /// <summary>
+                /// Toggled on when stream initialization is done.
+                /// </summary> 
+                public bool IsInitialized { get; private set; }
 
-	private void CaptureCamera(Camera camera)
-	{
-		DestroyTexture();
+                /// <summary>
+                /// Specifies logging verbosity. Toggle on for more logging info.
+                /// </summary>
+                public bool VerboseLog { get; set; }
 
-        if (camera.targetTexture != null)
-        {
-            m_TexturePtr = camera.targetTexture.GetNativeTexturePtr();
+                /// <summary>
+                /// The user-defined parameters for this video stream.
+                /// </summary>
+                [Tooltip("Video Settings")]
+                public GenvidVideoParameters Settings;
 
-            var gvStatus = GenvidSDK.SetParameter(m_StreamName, "video.useopenglconvention", 1);
-            if (GenvidSDK.StatusFailed(gvStatus))
-            {
-                Debug.LogError("Error while setting the opengl convention: " + GenvidSDK.StatusToString(gvStatus));
-            }
-            else if (GenvidSessionManager.Instance.ActivateDebugLog)
-            {
-                Debug.Log("Genvid Set Parameter openGL performed correctly.");
-            }
-            Debug.Log("Your camera is using a render texture, we are using it instead of your camera for your video stream.");
-        }
-        else
-        {
-            m_RenderTexture = new RenderTexture(camera.pixelWidth, camera.pixelHeight, 24, RenderTextureFormat.ARGB32);
-            if (m_RenderTexture.Create())
-            {
-                m_TexturePtr = m_RenderTexture.GetNativeTexturePtr();
+                /// <summary>
+                /// The video capture source. Used when the SDK automatic-capture mode isn't selected.
+                /// </summary>
+                [SerializeField]
+                [Tooltip("Video Source (Texture or Camera)")]
+                private UnityEngine.Object m_Source;
 
-                m_commandBuffer = new CommandBuffer();
-                m_commandBuffer.name = commandBufferName;
-                camera.AddCommandBuffer(CameraEvent.AfterEverything, m_commandBuffer);
-                m_commandBuffer.Blit(BuiltinRenderTextureType.CurrentActive, m_RenderTexture);
-            }
-            else
-            {
-                Debug.LogError("Failed to create the Render Texture.");
-            }
-        }
-	}
-
-	// GENVID - Video capture start
-	private IEnumerator CallPluginAtEndOfFrames()
-	{
-		// GetRenderEventFunc param
-		System.IntPtr renderingFunction = GetRenderEventFunc();
-		var waitForEndOfFrame = new WaitForEndOfFrame();
-		GenvidSDK.Status status = GenvidSDK.Status.Success;
-
-		while (true)
-		{
-			// Wait until all frame rendering is done
-			yield return waitForEndOfFrame;
-
-			if(m_QuitProcess == false)
-			{ 
-				if (m_ProcessComplete)
-				{
-					if(OnRenderEventInit())
-					{
-                        if (m_CaptureType != eCaptureType.Automatic)
+                /// <summary>
+                /// Returns the video-capture source.
+                /// </summary>
+                public UnityEngine.Object Source
+                {
+                    get { return m_Source; }
+                    set
+                    {
+                        m_Source = value;
+                        if (m_GenvidVideoCapture != null)
                         {
-                            status = GenvidSDK.SetParameterPointer(m_StreamName, "video.source.id3d11texture2d", m_TexturePtr);
-                            if (GenvidSDK.StatusFailed(status))
-                            {
-                                Debug.LogError("Error while initializing texture for capture: " + GenvidSDK.StatusToString(status));
-                                if (status == GenvidSDK.Status.InvalidParameter)
-                                {
-                                    Debug.LogError("Please ensure you are using a D3D11 graphic driver.");
-                                }
-                            }
-                            else if (GenvidSessionManager.Instance.ActivateDebugLog)
-                            {
-                                Debug.Log("Genvid Set Parameter Pointer for texture2d performed correctly.");
-                            }
+                            m_GenvidVideoCapture.VideoSource = value;
+                        }
+                    }
+                }
+
+                /// <summary>
+                /// Helper to facilitate video capture.
+                /// </summary>
+                private GenvidVideoCapture m_GenvidVideoCapture;
+
+                /// <summary>
+                /// Dummy object used to keep the video submitter from being destroyed between scenes.
+                /// </summary>
+                private DummyMonoBehavior m_DummyMonoBehavior;
+
+                /// <summary>
+                /// The periodic deadline keeps track of when to invoke
+                /// the stream-submission callback based on the stream framerates.
+                /// </summary>
+                private PeriodicDeadline m_Deadline = new PeriodicDeadline();
+
+                /// <summary>
+                /// Returns the periodic deadline object.
+                /// </summary>
+                private PeriodicDeadline Deadline
+                {
+                    get
+                    {
+                        // Ensure framerate is consistent.
+                        m_Deadline.Framerate = Settings.Framerate;
+                        return m_Deadline;
+                    }
+                }
+
+                /// <summary>
+                /// Initializes a new video stream with the user-defined parameters.
+                /// Starts the capture coroutine.
+                /// </summary>
+                /// <returns>True if the stream is successfully created, false otherwise.</returns>
+                public bool Initialize()
+                {
+#if UNITY_EDITOR || UNITY_STANDALONE_WIN
+                    if (!IsInitialized)
+                    {
+                        GenvidVideoUtils.VerboseLog = VerboseLog;
+                        bool succeeded = GenvidVideoUtils.CreateStream(Settings.Id, Settings.Framerate);
+                        if (succeeded)
+                        {
+                            /// Starts video capture.
+                            m_GenvidVideoCapture = new GenvidVideoCapture(Settings.Id, Settings.Framerate, Settings.CaptureType, Source);
+                            m_GenvidVideoCapture.VerboseLog = VerboseLog;
+
+                            GameObject singleton = new GameObject("Genvid Video Capture (Singleton)");
+                            m_DummyMonoBehavior = singleton.AddComponent<DummyMonoBehavior>();
+                            UnityEngine.Object.DontDestroyOnLoad(singleton);
+                            m_DummyMonoBehavior.StartCoroutine(m_GenvidVideoCapture.CallPluginAtEndOfFrames(m_Deadline, GenvidPlugin.Instance.Settings.DisableVideoDataSubmissionThrottling));
+                            IsInitialized = true;
+                        }
+                    }
+
+                    return IsInitialized;
+#else
+                return true;
+#endif
+                }
+
+                /// <summary>
+                /// Destroys the video stream and ends the capture process.
+                /// </summary>
+                /// <returns>True if the stream is successfully destroyed, false otherwise.</returns>
+                public bool Terminate()
+                {
+#if UNITY_EDITOR || UNITY_STANDALONE_WIN
+                    if (IsInitialized)
+                    {
+                        if (GenvidVideoUtils.DestroyStream(Settings.Id))
+                        {
+                            m_GenvidVideoCapture.QuitProcess();
+                            m_GenvidVideoCapture.CleanupResources();
+                            UnityEngine.Object.Destroy(m_DummyMonoBehavior);
+                            IsInitialized = false;
                         }
                         else
                         {
-                            GL.IssuePluginEvent(renderingFunction, 0);
-                            status = GetVideoInitStatus();
-                            if (GenvidSDK.StatusFailed(status))
-                            {
-                                Debug.LogError("Error while starting the video stream : " + GenvidSDK.StatusToString(status));
-                                if (status == GenvidSDK.Status.InvalidParameter)
-                                {
-                                    Debug.LogError("Please ensure you are using a D3D11 graphic driver.");
-                                }
-                            }
-                            else if (GenvidSessionManager.Instance.ActivateDebugLog)
-                            {
-                                Debug.Log("Genvid GetVideoInitStatus performed correctly.");
-                            }
-                            status = GenvidSDK.Status.ConnectionInProgress;
+                            return false;
                         }
-					}
-					else
-					{
-						GL.IssuePluginEvent(renderingFunction, 0);
-						status = GetVideoInitStatus();
-						if (GenvidSDK.StatusFailed(status))
-                        {
-							Debug.LogError("Error while starting the video stream : " + GenvidSDK.StatusToString(status));
-							if (status == GenvidSDK.Status.InvalidParameter)
-							{
-								Debug.LogError("Please ensure you are using a D3D11 graphic driver.");
-							}
-						}
-                        else if (GenvidSessionManager.Instance.ActivateDebugLog)
-                        {
-                            Debug.Log("Genvid GetVideoInitStatus performed correctly.");
-                        }
-                        status = GenvidSDK.Status.ConnectionInProgress;
-					}
-					m_ProcessComplete = false;
-				}
-				else
-				{
-					if(OnRenderEventUpdate())
-					{
-                        if (m_CaptureType != eCaptureType.Automatic)
-                        {
-                            status = GenvidSDK.SetParameterPointer(m_StreamName, "video.source.id3d11texture2d", m_TexturePtr);
-                            if (GenvidSDK.StatusFailed(status))
-                            {
-                                Debug.LogError("Error while assigning new texture for capture: " + GenvidSDK.StatusToString(status));
-                                if (status == GenvidSDK.Status.InvalidParameter)
-                                {
-                                    Debug.LogError("Please ensure you are using D3D11 graphic driver.");
-                                }
-                            }
-                            else if (GenvidSessionManager.Instance.ActivateDebugLog)
-                            {
-                                Debug.Log("Genvid Set Parameter Pointer for texture2d performed correctly.");
-                            }
-                        }
-					}
-					GL.IssuePluginEvent(renderingFunction, 1);
-					status = GetVideoSubmitDataStatus();
-					if (GenvidSDK.StatusFailed(status))
-                    {
-						Debug.LogError("Error while sending video data : " + GenvidSDK.StatusToString(status));
-					}
-                    else if (GenvidSessionManager.Instance.ActivateDebugLog)
-                    {
-                        Debug.Log("Genvid GetVideoSubmitDataStatus performed correctly.");
                     }
+#endif
+                    return true;
                 }
-			}
-			else
-			{
-				m_TerminateCoroutine = true;
-				yield break;
-			}
-		}
-	}
-	// GENVID - Video capture end
 
-	bool OnRenderEventInit()
-	{
-		if (m_CurrentVideoSource != m_VideoSource)
-		{
-			UpdateCaptureType();
-			return true;
-		}
-		return false;
-	}
+                /// <summary>
+                /// Nothing to do for the video on session start.
+                /// </summary>
+                public void Start()
+                {
+                    /* Nothing to do*/
+                }
 
-	bool OnRenderEventUpdate()
-	{
-		if(m_CurrentVideoSource != m_VideoSource)
-		{
-			UpdateCaptureType();
-			return true;
-		}
-		return false;
-	}
-
-    private Camera GetCameraFromSource(UnityEngine.Object Source)
-    {
-        Camera camera = null;
-
-        if (!(Source is Camera))
-        {
-            var go = Source as GameObject;
-            if (go != null)
-            {
-                camera = go.GetComponent<Camera>();
+                /// <summary>
+                /// Nothing to do for the video on session update.
+                /// The capture coroutine takes care of everything. Updates occur on end of frame.
+                /// </summary>
+                public void Update()
+                {
+                    /* Nothing to do*/
+                }
             }
         }
-        else
-        {
-            camera = (Camera)Source;
-        }
-        return camera;
     }
 
-    private void CleanupCameraCommandBuffer(UnityEngine.Object Source)
-	{
-		if(Source != null)
-		{
-			Camera camera = GetCameraFromSource(Source);
+    [System.Obsolete("Deprecated. Call `Genvid.Plugin.GenvidVideo` to use Genvid video stream.")]
+    public class GenvidVideo : GenvidStreamBase
+    {
+        /// <summary>
+        /// The video stream name.
+        /// </summary>
+        [SerializeField]
+        [Tooltip("Video Stream Name")]
+        private string m_StreamName;
 
-            var listCommandBuffers = camera.GetCommandBuffers(CameraEvent.AfterEverything);
-            var findBuffer = false;
+        /// <summary>
+        /// The video stream framerate.
+        /// </summary>
+        [SerializeField]
+        [Range(30.0f, 60.0f)]
+        [Tooltip("Video Stream Framerate")]
+        private float m_Framerate = 30.0f;
 
-            foreach (CommandBuffer x in listCommandBuffers)
+        /// <summary>
+        /// The video stream capture type: texture or automatic.
+        /// </summary>
+        [SerializeField]
+        [Tooltip("Video Capture Type")]
+        private GenvidVideoParameters.eCaptureType m_CaptureType;
+
+        /// <summary>
+        /// The video capture source. Use when not in automatic mode.
+        /// </summary>
+        [SerializeField]
+        [Tooltip("Video Source (Texture or Camera)")]
+        private UnityEngine.Object m_VideoSource;
+
+        /// <summary>
+        /// Helper to facilitate video capture.
+        /// </summary>
+        private GenvidVideoCapture m_GenvidVideoCapture;
+
+        /// <summary>
+        /// The periodic deadline keeps track of when to invoke
+        /// the stream-submission callback based on the stream framerates.
+        /// </summary>
+        private PeriodicDeadline m_Deadline = new PeriodicDeadline();
+
+        /// <summary>
+        /// Returns the periodic deadline object.
+        /// </summary>
+        private PeriodicDeadline Deadline
+        {
+            get
             {
-                if (x.name.Equals(commandBufferName))
+                /// Ensure the framerate is consistent.
+                m_Deadline.Framerate = Framerate;
+                return m_Deadline;
+            }
+        }
+
+        /// <summary>
+        /// The video stream name getter/setter.
+        /// </summary>
+        public string StreamName
+        {
+            get { return m_StreamName; }
+            private set { m_StreamName = value; }
+        }
+
+        /// <summary>
+        /// The video stream framerate getter/setter.
+        /// </summary>
+        public float Framerate
+        {
+            get { return m_Framerate; }
+            private set
+            {
+                m_Framerate = value;
+                Deadline.Framerate = value;
+            }
+        }
+
+        /// <summary>
+        /// The video stream capture-type getter/setter.
+        /// </summary>
+        public GenvidVideoParameters.eCaptureType CaptureType
+        {
+            get { return m_CaptureType; }
+            set { m_CaptureType = value; }
+        }
+
+        /// <summary>
+        /// The video-capture source capture-type getter/setter.
+        /// </summary>
+        public UnityEngine.Object VideoSource
+        {
+            get { return m_VideoSource; }
+            set
+            {
+                m_VideoSource = value;
+                if (m_GenvidVideoCapture != null)
                 {
-                    findBuffer = true;
-                    break;
+                    m_GenvidVideoCapture.VideoSource = value;
                 }
             }
+        }
 
-            if (findBuffer)
+        /// <summary>
+        /// Toggled on when stream initialization is done.
+        /// </summary> 
+        public bool IsCreated { get; private set; }
+
+        /// GENVID - On start begin
+
+        /// <summary>
+        /// Initializes a new video stream with the user-defined parameters.
+        /// Starts the capture coroutine.
+        /// </summary>
+        /// <returns>True if the stream is successfully created, false otherwise.</returns>
+        public override bool Create()
+        {
+#if UNITY_EDITOR || UNITY_STANDALONE_WIN
+            if (GenvidSessionManager.Instance.ActivateSDK && !IsCreated && GenvidSessionManager.IsInitialized)
             {
-                camera.RemoveCommandBuffer(CameraEvent.AfterEverything, m_commandBuffer);
-            }
-		}
-	}
-
-	void UpdateCaptureType()
-	{
-		var oldVideoSource = m_CurrentVideoSource;
-		m_CurrentVideoSource = m_VideoSource;
-
-		if(m_CaptureType != eCaptureType.Automatic)
-		{
-            if (GetCameraFromSource(oldVideoSource) != null)
-            {
-                CleanupCameraCommandBuffer(oldVideoSource);
-            }
-
-            if (m_CaptureType == eCaptureType.Texture)
-            {
-                if (m_CurrentVideoSource is Texture)
+                GenvidVideoUtils.VerboseLog = GenvidSessionManager.Instance.ActivateDebugLog;
+                bool succeeded = GenvidVideoUtils.CreateStream(StreamName, Framerate);
+                if (succeeded)
                 {
-                    m_TexturePtr = ((Texture)m_CurrentVideoSource).GetNativeTexturePtr();
-
-                    var gvStatus = GenvidSDK.SetParameter(m_StreamName, "video.useopenglconvention", 1);
-                    if (GenvidSDK.StatusFailed(gvStatus))
-                    {
-                        Debug.LogError("Error while setting the opengl convention: " + GenvidSDK.StatusToString(gvStatus));
-                    }
-                    else if (GenvidSessionManager.Instance.ActivateDebugLog)
-                    {
-                        Debug.Log("Genvid Set Parameter useOpenGL performed correctly.");
-                    }
+                    /// Starts video capture.
+                    m_GenvidVideoCapture = new GenvidVideoCapture(StreamName, Framerate, CaptureType, VideoSource);
+                    m_GenvidVideoCapture.VerboseLog = GenvidSessionManager.Instance.ActivateDebugLog;
+                    StartCoroutine(m_GenvidVideoCapture.CallPluginAtEndOfFrames(Deadline, GenvidSessionManager.DisableVideoDataSubmissionThrottling));
+                    IsCreated = true;
                 }
                 else
                 {
-                    var gvStatus = GenvidSDK.SetParameter(m_StreamName, "video.useopenglconvention", 0);
-                    if (GenvidSDK.StatusFailed(gvStatus))
-                    {
-                        Debug.LogError("Error while setting the opengl convention: " + GenvidSDK.StatusToString(gvStatus));
-                    }
-                    else if (GenvidSessionManager.Instance.ActivateDebugLog)
-                    {
-                        Debug.Log("Genvid Set Parameter useOpenGL performed correctly.");
-                    }
-
-                    Camera camera = GetCameraFromSource(m_CurrentVideoSource);
-                    if (camera != null)
-                    {
-                        CaptureCamera(camera);
-                    }
-                    else
-                    {
-                        Debug.LogError("Cannot cast the current video source object: " + m_CurrentVideoSource.name);
-                    }
+                    IsCreated = false;
                 }
             }
+#endif
+            return true;
         }
-	}
+        /// GENVID - On start end
+
+        /// <summary>
+        /// Destroys the video stream and ends the capture process.
+        /// </summary>
+        /// <returns>True if the stream is successfully destroyed, false otherwise.</returns>
+        public override bool Destroy()
+        {
+#if UNITY_EDITOR || UNITY_STANDALONE_WIN
+            if (IsCreated)
+            {
+                if (GenvidVideoUtils.DestroyStream(StreamName))
+                {
+                    m_GenvidVideoCapture.QuitProcess();
+                    StartCoroutine(DestroyVideo());
+                }
+            }
+#endif
+            return true;
+        }
+
+        /// <summary>
+        /// Waits for the video capture coroutine to exit if the session manager isn't
+        /// currently terminating the session. Then it cleans up video capture resources.
+        /// </summary>
+        /// <returns>Returns a "wait until" object for the end of the video capture coroutine.</returns>
+#if UNITY_EDITOR || UNITY_STANDALONE_WIN
+        private IEnumerator DestroyVideo()
+        {
+            yield return m_GenvidVideoCapture.DestroyVideo(GenvidSessionManager.IsDestroying);
+            IsCreated = false;
+        }
+#endif
+    }
 }

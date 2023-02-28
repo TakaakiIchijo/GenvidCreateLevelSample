@@ -34,10 +34,12 @@ sendButtonElement.onclick = function () {
 
     var levelDataArrayStr = arr.join(',');
 
-    genvidClient.sendEvent([{
-        "key": ["levelData"],
-        "value": levelDataArrayStr
-    }])
+    let evt = {
+        key: ["levelData"],
+        value: levelDataArrayStr,
+      };
+
+    genvidClient.sendEvent([evt]);
 };
 
 

@@ -19,7 +19,7 @@ public class PillarCreator : MonoBehaviour
         }
     }
 
-    public void SetStageData(string eventId, GenvidSDK.EventResult[] results, int numResult, 
+    public void SetStageData(string eventID, GenvidSDK.EventResult[] results, int numResult, 
         IntPtr userData)
     {
         var selectedPlayerNumberStr = results[0].key.fields[0];
