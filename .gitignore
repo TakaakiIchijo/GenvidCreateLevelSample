@@ -17,6 +17,14 @@ app/UserSettings/
 # Genvid SDK
 app/Assets/Genvid
 
+# Genvid Files
+config
+public
+backend
+templates
+package.json
+web.py
+
 # Asset meta data should only be ignored when the corresponding asset is also ignored
 !/[Aa]ssets/**/*.meta
 
